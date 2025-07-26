@@ -66,7 +66,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
         with tqdm(total=train_steps, desc=f"{agent_name} Train Run {run}", unit="step") as pbar:
             while not done["__all__"]:
                 actions = {ts: agents[ts].act() for ts in agents}
-                s, r, done, _ = env.step(actions)
+                s, r, done, info = env.step(actions)
                 reward_sum = sum(r.values())
                 total_train_reward += reward_sum
 
@@ -75,6 +75,9 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
 
                 global_train_step += 1
                 writer.add_scalar(f"{agent_name}/StepReward/Train", reward_sum, global_train_step)
+                for k, v in info.items():
+                    writer.add_scalar(f"{agent_name}/Train/Info/{k}", v, global_train_step)
+
                 for ts in agents:
                     strat = getattr(agents[ts], "exploration_strategy", None)
                     if strat and hasattr(strat, "epsilon"):
@@ -119,12 +122,14 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
             with tqdm(total=eval_steps, desc=f"{agent_name} Eval Run {run} Ep {ep}", unit="step") as eval_pbar:
                 while not done_eval["__all__"]:
                     actions = {ts: agents[ts].act() for ts in agents}
-                    s_eval, r_eval, done_eval, _ = eval_env.step(actions)
+                    s_eval, r_eval, done_eval, info = eval_env.step(actions)
                     step_reward = sum(r_eval.values())
                     total_eval_reward += step_reward
 
                     global_eval_step_ref[0] += 1
                     writer.add_scalar(f"{agent_name}/StepReward/Eval", step_reward, global_eval_step_ref[0])
+                    for k, v in info.items():
+                        writer.add_scalar(f"{agent_name}/Eval/Info/{k}", v, global_train_step)
 
                     eval_pbar.update(1)
                     if args.v:
@@ -138,6 +143,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
                 (run - 1) * args.eval_episodes + ep
             )
 
+        env.save_csv(env.out_csv_name, run)
         avg_eval = sum(eval_rewards) / len(eval_rewards)
         eval_avg_rewards.append(avg_eval)
         writer.add_scalar(f"{agent_name}/EpisodeReward/EvalAvg", avg_eval, run)
