@@ -78,7 +78,6 @@ python main.py --help
 ## Dependencies
 
 - `matplotlib`: For plotting training and evaluation results.
-- `torch`: For tensor operations and logging with TensorBoard.
 - `tqdm`: For progress bars.
 - `sumo-rl`: Custom SUMO-based RL environment.
 - `libsumo`: Faster alternative to `traci` for SUMO communication.
