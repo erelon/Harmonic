@@ -3,3 +3,4 @@ torch>=1.10.0
 tqdm>=4.62.0
 sumo-rl>=1.4.5
 libsumo>=1.24.0
+tesorboard>=2.20.0
