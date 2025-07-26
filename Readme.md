@@ -1,6 +1,5 @@
 ### README
 
-```markdown
 # SUMO-RL Traffic Signal Control
 
 This project benchmarks traffic signal control agents using the SUMO (Simulation of Urban MObility) traffic simulator. It supports various reinforcement learning agents and baseline methods for single-intersection traffic control.
