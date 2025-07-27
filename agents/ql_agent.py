@@ -33,3 +33,6 @@ class QLAgent(QLAgentBase):
             data = pickle.load(f)
             self.q_table = data['q_table']
         print(f"Q-table loaded from {file_path}")
+
+    def learn(self, next_state, reward, done=False, time=None):
+        super().learn(next_state, reward, done)

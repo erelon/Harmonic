@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from envs.duration import DurationWrapper
-
 # Ensure SUMO tools are available
 if "SUMO_HOME" in os.environ:
     tools = os.path.join(os.environ["SUMO_HOME"], "tools")
@@ -18,6 +16,7 @@ else:
 
 os.environ["LIBSUMO_AS_TRACI"] = "1"
 
+from sumo_rl import SumoEnvironment
 from agents import *
 from sumo_rl.exploration import EpsilonGreedy
 import sumo_rl.nets as nets
@@ -39,7 +38,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
 
     for run in range(1, args.runs + 1):
         print(f"\n=== {agent_name} - Starting Training Run {run} ===")
-        env = DurationWrapper(
+        env = SumoEnvironment(
             net_file=args.net_file,
             route_file=args.route,
             out_csv_name=os.path.join(base_run_dir, "csvs", f"{agent_name}_{run}.csv"),
@@ -53,11 +52,11 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
             ts: agent_builder(
                 initial_state=initial_states[ts],
                 ts=ts,
-                encode_fn=env.env.encode,
+                encode_fn=env.encode,
                 obs_space=env.observation_space,
                 action_space=env.action_space
             )
-            for ts in env.env.ts_ids
+            for ts in env.ts_ids
         }
 
         done = {"__all__": False}
@@ -71,8 +70,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                 total_train_reward += reward_sum
 
                 for ts in agents:
-                    time = info.get("action_duration")
-                    agents[ts].learn(next_state=env.env.encode(s[ts], ts), reward=r[ts], time=time)
+                    agents[ts].learn(next_state=env.encode(s[ts], ts), reward=r[ts])
 
                 global_train_step += 1
                 writer.add_scalar(f"{agent_name}/StepReward/Train", reward_sum, global_train_step)
@@ -89,7 +87,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                     pbar.set_postfix(avg_train_reward=total_train_reward / pbar.n)
 
         # save CSV for this run
-        env.env.save_csv(env.env.out_csv_name, run)
+        env.save_csv(env.out_csv_name, run)
         training_rewards.append(total_train_reward)
         print(f"=== {agent_name} - Finished Training Run {run} | Reward: {total_train_reward} | Steps: {pbar.n} ===")
 
@@ -105,8 +103,8 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                 strat.min_epsilon = 0.0
                 strat.epsilon = 0.0
 
-        env.env.close()
-        eval_env = DurationWrapper(
+        env.close()
+        eval_env = SumoEnvironment(
             net_file=args.net_file,
             route_file=args.route,
             out_csv_name=None,
@@ -127,7 +125,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                     s_eval, r_eval, done_eval, info = eval_env.step(actions)
                     # update the state for each agent:
                     for ts in agents:
-                        agents[ts].state = eval_env.env.encode(s_eval[ts], ts)
+                        agents[ts].state = env.encode(s_eval[ts], ts)
 
                     step_reward = sum(r_eval.values())
                     total_eval_reward += step_reward
@@ -149,7 +147,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                 (run - 1) * args.eval_episodes + ep
             )
 
-        eval_env.env.save_csv(eval_env.env.out_csv_name, run)
+        env.save_csv(env.out_csv_name, run)
         avg_eval = sum(eval_rewards) / len(eval_rewards)
         eval_avg_rewards.append(avg_eval)
         writer.add_scalar(f"{agent_name}/EpisodeReward/EvalAvg", avg_eval, run)
@@ -160,7 +158,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
             if strat and ts in original_epsilons:
                 strat.initial_epsilon, strat.min_epsilon, strat.epsilon = original_epsilons[ts]
 
-        eval_env.env.close()
+        eval_env.close()
 
         # save q-table per run
         for ts in agents:
@@ -179,7 +177,7 @@ def evaluate_baseline(agent_name, agent_builder, args, writer):
     global_eval_step_ref = 0
 
     print(f"\n=== {agent_name} - Baseline Evaluation ===")
-    eval_env = DurationWrapper(
+    eval_env = SumoEnvironment(
         net_file=args.net_file,
         route_file=args.route,
         out_csv_name=None,
@@ -193,11 +191,11 @@ def evaluate_baseline(agent_name, agent_builder, args, writer):
         ts: agent_builder(
             initial_state=initial_states[ts],
             ts=ts,
-            encode_fn=eval_env.env.encode,
+            encode_fn=eval_env.encode,
             obs_space=eval_env.observation_space,
             action_space=eval_env.action_space
         )
-        for ts in eval_env.env.ts_ids
+        for ts in eval_env.ts_ids
     }
 
     for ep in range(1, args.eval_episodes + 1):
@@ -227,7 +225,7 @@ def evaluate_baseline(agent_name, agent_builder, args, writer):
 
     avg_eval = sum(eval_rewards) / len(eval_rewards)
     writer.add_scalar(f"{agent_name}/EpisodeReward/EvalAvg", avg_eval, 1)
-    eval_env.env.close()
+    eval_env.close()
     return [], eval_rewards
 
 
@@ -251,8 +249,8 @@ if __name__ == "__main__":
     prs.add_argument("-d", type=float, default=0.99, help="Epsilon decay rate")
     prs.add_argument("-ns", type=int, default=40, help="Fixed green time (NS) for FixedTimeAgent")
     prs.add_argument("-we", type=int, default=40, help="Fixed green time (WE) for FixedTimeAgent")
-    prs.add_argument("-mingreen", type=int, default=5, help="Minimum green time")
-    prs.add_argument("-maxgreen", type=int, default=60, help="Maximum green time")
+    prs.add_argument("-mingreen", type=int, default=10, help="Minimum green time")
+    prs.add_argument("-maxgreen", type=int, default=50, help="Maximum green time")
     prs.add_argument("-s", type=int, default=100000, help="Training simulation seconds")
     prs.add_argument("-eval_s", type=int, default=20000,
                      help="Evaluation simulation seconds (shorter)")
@@ -287,48 +285,7 @@ if __name__ == "__main__":
                 decay=args.d
             ),
         ),
-        "Continuous-Q-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: ContinuousQLearningAgent(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
         "R-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: RLLearner(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            rho_learning_rate=args.a,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "SMART": lambda initial_state, ts, encode_fn, obs_space, action_space: SMARTRLAgent(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            rho_learning_rate=args.a,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "Harmonic-R-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: HarmonicRLAgent(
             starting_state=encode_fn(initial_state, ts),
             state_space=obs_space,
             action_space=action_space,

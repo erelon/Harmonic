@@ -37,7 +37,7 @@ class RLLearner(QLAgent):
         """Choose action based on epsilon-greedy policy inherited from QLAgent."""
         return super().act()
 
-    def learn(self, next_state, reward, done=False):
+    def learn(self, next_state, reward, done=False, time=None):
         """Update Q-table and rho based on R-learning update rule with rho-trick."""
         # Ensure next state is in the Q-table
         if next_state not in self.q_table:
