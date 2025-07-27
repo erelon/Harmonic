@@ -12,6 +12,15 @@ class QLAgent(QLAgentBase):
         if q_table_path:
             self.load_q_table(q_table_path)
 
+    def act(self):
+        """Choose action based on Q-table."""
+        if self.state not in self.q_table:
+            # Initialize Q-values for the current state if not already present
+            self.q_table[self.state] = [0 for _ in range(self.action_space.n)]
+
+        self.action = self.exploration.choose(self.q_table, self.state, self.action_space)
+        return self.action
+
     def save_q_table(self, file_path):
         """Save the Q-table and rho to a file."""
         with open(file_path, 'wb') as f:

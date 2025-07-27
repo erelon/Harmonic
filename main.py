@@ -32,6 +32,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
     base_eval_steps = int(args.eval_s / max(args.mingreen, 1))
     eval_steps = 2 * base_eval_steps
     global_train_step = 0
+    global_eval_step = 0
 
     # Prepare q-tables directory under this run
     qtables_root = os.path.join(base_run_dir, "qtables", agent_name.lower())
@@ -99,9 +100,10 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
         for ts in agents:
             strat = getattr(agents[ts], "exploration_strategy", None)
             if strat:
-                original_epsilons[ts] = (strat.initial_epsilon, strat.min_epsilon)
+                original_epsilons[ts] = (strat.initial_epsilon, strat.min_epsilon, strat.epsilon)
                 strat.initial_epsilon = 0.0
                 strat.min_epsilon = 0.0
+                strat.epsilon = 0.0
 
         env.close()
         eval_env = SumoEnvironment(
@@ -123,13 +125,17 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
                 while not done_eval["__all__"]:
                     actions = {ts: agents[ts].act() for ts in agents}
                     s_eval, r_eval, done_eval, info = eval_env.step(actions)
+                    # update the state for each agent:
+                    for ts in agents:
+                        agents[ts].state = env.encode(s_eval[ts], ts)
+
                     step_reward = sum(r_eval.values())
                     total_eval_reward += step_reward
 
-                    global_eval_step_ref[0] += 1
-                    writer.add_scalar(f"{agent_name}/StepReward/Eval", step_reward, global_eval_step_ref[0])
+                    global_eval_step += 1
+                    writer.add_scalar(f"{agent_name}/StepReward/Eval", step_reward, global_eval_step)
                     for k, v in info.items():
-                        writer.add_scalar(f"{agent_name}/Eval/Info/{k}", v, global_train_step)
+                        writer.add_scalar(f"{agent_name}/Eval/Info/{k}", v, global_eval_step)
 
                     eval_pbar.update(1)
                     if args.v:
@@ -152,7 +158,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, global_eval_step
         for ts in agents:
             strat = getattr(agents[ts], "exploration_strategy", None)
             if strat and ts in original_epsilons:
-                strat.initial_epsilon, strat.min_epsilon = original_epsilons[ts]
+                strat.initial_epsilon, strat.min_epsilon, strat.epsilon = original_epsilons[ts]
 
         eval_env.close()
 
@@ -201,12 +207,14 @@ def evaluate_baseline(agent_name, agent_builder, args, writer, global_eval_step_
         with tqdm(total=eval_steps, desc=f"{agent_name} Eval Ep {ep}", unit="step") as pbar:
             while not done["__all__"]:
                 actions = {ts: agents[ts].act() for ts in agents}
-                s, r, done, _ = eval_env.step(actions)
+                s, r, done, info = eval_env.step(actions)
                 step_reward = sum(r.values())
                 total += step_reward
 
                 global_eval_step_ref[0] += 1
                 writer.add_scalar(f"{agent_name}/StepReward/Eval", step_reward, global_eval_step_ref[0])
+                for k, v in info.items():
+                    writer.add_scalar(f"{agent_name}/Eval/Info/{k}", v, global_eval_step_ref[0])
 
                 pbar.update(1)
                 if args.v:
