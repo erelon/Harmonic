@@ -273,9 +273,9 @@ if __name__ == "__main__":
                      help="Network definition file")
     prs.add_argument("-a", type=float, default=0.1, help="Alpha (learning rate)")
     prs.add_argument("-g", type=float, default=0.99, help="Gamma (discount factor)")
-    prs.add_argument("-e", type=float, default=0.1, help="Initial epsilon (exploration)")
-    prs.add_argument("-me", type=float, default=0.01, help="Minimum epsilon")
-    prs.add_argument("-d", type=float, default=0.99, help="Epsilon decay rate")
+    prs.add_argument("-e", type=float, default=0.3, help="Initial epsilon (exploration)")
+    prs.add_argument("-me", type=float, default=0.05, help="Minimum epsilon")
+    prs.add_argument("-d", type=float, default=0.99997, help="Epsilon decay rate")
     prs.add_argument("-ns", type=int, default=40, help="Fixed green time (NS) for FixedTimeAgent")
     prs.add_argument("-we", type=int, default=40, help="Fixed green time (WE) for FixedTimeAgent")
     prs.add_argument("-mingreen", type=int, default=5, help="Minimum green time")
@@ -304,7 +304,11 @@ if __name__ == "__main__":
         for rid in range(1, n_runs + 1):
             jobs.append((name, args, rid, base_run_dir))
 
-    # dispatch
+    # single mode
+    # for job in jobs:
+    #     run_agent(*job)
+
+    # # dispatch
     with ProcessPoolExecutor(max_workers=min(len(jobs), mp.cpu_count())) as pool:
         futures = [pool.submit(run_agent, *job) for job in jobs]
         for f in futures:

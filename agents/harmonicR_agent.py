@@ -31,14 +31,10 @@ class HarmonicRLAgent(RLLearner):
         )
         # Initialize harmonic averaging for rho
         self.reciprocal_rho = 1.0
-        self.total_time = 0
-        self.total_reward = 0
 
     def reset(self):
         """Reset the harmonic rho trackers."""
         self.reciprocal_rho = 1.0
-        self.total_time = 0
-        self.total_reward = 0
 
     def learn(self, next_state, reward, done=False, time=None):
         """
@@ -66,15 +62,14 @@ class HarmonicRLAgent(RLLearner):
         self.q_table[s][a] += self.rho_learning_rate * delta
 
         # Harmonic rho update on greedy actions
-        if a == best_current_action and reward != 0:
+        if a == best_current_action:
             # EMA of reciprocal times per reward
             self.reciprocal_rho = (
                     (1 - self.rho_learning_rate) * self.reciprocal_rho
-                    + self.rho_learning_rate * (time / reward)
+                    + self.rho_learning_rate *
+                    (time / (reward + 1e-8))  # reward can be 0
             )
             self.rho = 1.0 / self.reciprocal_rho
-            self.total_time += time
-            self.total_reward += reward
 
         self.state = next_state
         self.acc_reward += reward
