@@ -4,13 +4,13 @@ from sumo_rl import SumoEnvironment
 
 class DurationWrapper:
     def __init__(
-        self,
-        net_file,
-        route_file,
-        min_green,
-        max_green,
-        granularity=5,
-        **kwargs
+            self,
+            net_file,
+            route_file,
+            min_green,
+            max_green,
+            granularity=5,
+            **kwargs
     ):
         assert min_green % granularity == 0 and max_green % granularity == 0, \
             "min_green and max_green must be multiples of granularity"
@@ -44,51 +44,55 @@ class DurationWrapper:
         """
         actions: dict ts -> int in [0..max_units-min_units]
         """
-        # how many chunks each signal holds its phase
-        remaining = {
-            ts: self.min_units + act for ts, act in actions.items()
-        }
-        total_reward = {ts: 0 for ts in self.env.ts_ids}
-        done = {"__all__": False}
-        info = {}
-        chunks_executed = 0
+        # --- 1) Snapshot total waiting BEFORE macro-action ---
+        start_wait = 0.0
+        for sig in self.env.traffic_signals.values():
+            # each returns a list of per-lane accumulated waits
+            start_wait += sum(sig.get_accumulated_waiting_time_per_lane())
+        start_wait /= 100.0  # match env’s scaling
 
-        # A) HOLD loop: run until all remaining counters hit zero
+        # --- 2) HOLD loop (ignore rewards) ---
+        remaining = {ts: self.min_units + act for ts, act in actions.items()}
         max_chunks = max(remaining.values())
+        chunks_executed = 0
+        done = {"__all__": False}
+
         for _ in range(max_chunks):
-            sub_actions = {ts: self.last_phases[ts] for ts in self.env.ts_ids}
-            obs, rew, done, info = self.env.step(sub_actions)
+            # hold current phase
+            sub_act = {ts: self.last_phases[ts] for ts in self.env.ts_ids}
+            obs, _, done, info = self.env.step(sub_act)
             chunks_executed += 1
-
-            for ts, r in rew.items():
-                total_reward[ts] += r
             if done["__all__"]:
-                info["action_duration"] = chunks_executed * self.granularity
-                return obs, total_reward, done, info
-
-            # decrement counters
+                break
             for ts in remaining:
                 remaining[ts] = max(0, remaining[ts] - 1)
 
-        # B) SWITCH step: flip those that hit zero
-        sub_actions = {}
+        # --- 3) SWITCH step: flip those with zero remaining ---
+        switch_act = {}
         for ts, sig in self.env.traffic_signals.items():
-            n = self.env.action_spaces(ts).n
-            sub_actions[ts] = (
-                (self.last_phases[ts] + 1) % n
-                if remaining[ts] == 0
-                else self.last_phases[ts]
-            )
+            n_phases = self.env.action_spaces(ts).n
+            if remaining[ts] == 0:
+                switch_act[ts] = (self.last_phases[ts] + 1) % n_phases
+            else:
+                switch_act[ts] = self.last_phases[ts]
 
-        obs, rew, done, info = self.env.step(sub_actions)
+        obs, _, done, info = self.env.step(switch_act)
         chunks_executed += 1
-        for ts, r in rew.items():
-            total_reward[ts] += r
 
-        # update phase memory
-        for ts in sub_actions:
-            self.last_phases[ts] = sub_actions[ts]
+        # update memory of last phase
+        for ts, new_phase in switch_act.items():
+            self.last_phases[ts] = new_phase
 
-        # total elapsed time in seconds
+        # --- 4) Snapshot total waiting AFTER macro-action ---
+        end_wait = 0.0
+        for sig in self.env.traffic_signals.values():
+            end_wait += sum(sig.get_accumulated_waiting_time_per_lane())
+        end_wait /= 100.0
+
+        # --- 5) Compute the single “diff-waiting” reward ---
+        true_reward = start_wait - end_wait
+
+        # --- 6) Package results ---
+        reward_dict = {ts: true_reward for ts in self.env.ts_ids}
         info["action_duration"] = chunks_executed * self.granularity
-        return obs, total_reward, done, info
+        return obs, reward_dict, done, info
