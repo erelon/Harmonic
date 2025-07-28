@@ -22,8 +22,11 @@ os.environ["LIBSUMO_AS_TRACI"] = "1"
 
 import sumo_rl.nets as nets
 
-# make sure child processes forkserver
-mp.set_start_method("forkserver", force=True)
+try:
+    # make sure child processes forkserver
+    mp.set_start_method("forkserver", force=True)
+except:
+    pass
 
 
 def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
