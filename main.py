@@ -1,13 +1,15 @@
 import argparse
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+import multiprocessing as mp
 
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from envs.duration import DurationWrapper
+from util import AGENT_BUILDERS, BASELINE_AGENTS
 
 # Ensure SUMO tools are available
 if "SUMO_HOME" in os.environ:
@@ -18,12 +20,14 @@ else:
 
 os.environ["LIBSUMO_AS_TRACI"] = "1"
 
-from agents import *
-from sumo_rl.exploration import EpsilonGreedy
 import sumo_rl.nets as nets
+
+# make sure child processes forkserver
+mp.set_start_method("forkserver", force=True)
 
 
 def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
+    from envs.duration import DurationWrapper
     training_rewards = []
     eval_avg_rewards = []
 
@@ -51,11 +55,12 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
         initial_states = env.reset()
         agents = {
             ts: agent_builder(
-                initial_state=initial_states[ts],
+                init_state=initial_states[ts],
                 ts=ts,
                 encode_fn=env.env.encode,
                 obs_space=env.observation_space,
-                action_space=env.action_space
+                act_space=env.action_space,
+                args=args
             )
             for ts in env.env.ts_ids
         }
@@ -75,14 +80,14 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                     agents[ts].learn(next_state=env.env.encode(s[ts], ts), reward=r[ts], time=time)
 
                 global_train_step += 1
-                writer.add_scalar(f"{agent_name}/StepReward/Train", reward_sum, global_train_step)
+                writer.add_scalar(f"StepReward/Train", reward_sum, global_train_step)
                 for k, v in info.items():
-                    writer.add_scalar(f"{agent_name}/Train/Info/{k}", v, global_train_step)
+                    writer.add_scalar(f"Train/Info/{k}", v, global_train_step)
 
                 for ts in agents:
                     strat = getattr(agents[ts], "exploration_strategy", None)
                     if strat and hasattr(strat, "epsilon"):
-                        writer.add_scalar(f"{agent_name}/Epsilon/{ts}", strat.epsilon, global_train_step)
+                        writer.add_scalar(f"Epsilon/{ts}", strat.epsilon, global_train_step)
 
                 pbar.update(1)
                 if args.v:
@@ -93,7 +98,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
         training_rewards.append(total_train_reward)
         print(f"=== {agent_name} - Finished Training Run {run} | Reward: {total_train_reward} | Steps: {pbar.n} ===")
 
-        writer.add_scalar(f"{agent_name}/EpisodeReward/Train", total_train_reward, run)
+        writer.add_scalar(f"EpisodeReward/Train", total_train_reward, run)
 
         # zero-out epsilon for evaluation
         original_epsilons = {}
@@ -133,9 +138,9 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
                     total_eval_reward += step_reward
 
                     global_eval_step += 1
-                    writer.add_scalar(f"{agent_name}/StepReward/Eval", step_reward, global_eval_step)
+                    writer.add_scalar(f"StepReward/Eval", step_reward, global_eval_step)
                     for k, v in info.items():
-                        writer.add_scalar(f"{agent_name}/Eval/Info/{k}", v, global_eval_step)
+                        writer.add_scalar(f"Eval/Info/{k}", v, global_eval_step)
 
                     eval_pbar.update(1)
                     if args.v:
@@ -152,7 +157,7 @@ def train_and_evaluate(agent_name, agent_builder, args, writer, base_run_dir):
         eval_env.env.save_csv(eval_env.env.out_csv_name, run)
         avg_eval = sum(eval_rewards) / len(eval_rewards)
         eval_avg_rewards.append(avg_eval)
-        writer.add_scalar(f"{agent_name}/EpisodeReward/EvalAvg", avg_eval, run)
+        writer.add_scalar(f"EpisodeReward/EvalAvg", avg_eval, run)
 
         # restore epsilon
         for ts in agents:
@@ -179,6 +184,7 @@ def evaluate_baseline(agent_name, agent_builder, args, writer):
     global_eval_step_ref = 0
 
     print(f"\n=== {agent_name} - Baseline Evaluation ===")
+    from envs.duration import DurationWrapper
     eval_env = DurationWrapper(
         net_file=args.net_file,
         route_file=args.route,
@@ -191,11 +197,12 @@ def evaluate_baseline(agent_name, agent_builder, args, writer):
     initial_states = eval_env.reset()
     agents = {
         ts: agent_builder(
-            initial_state=initial_states[ts],
+            init_state=initial_states[ts],
             ts=ts,
             encode_fn=eval_env.env.encode,
             obs_space=eval_env.observation_space,
-            action_space=eval_env.action_space
+            act_space=eval_env.action_space,
+            args=args
         )
         for ts in eval_env.env.ts_ids
     }
@@ -213,36 +220,53 @@ def evaluate_baseline(agent_name, agent_builder, args, writer):
                 total += step_reward
 
                 global_eval_step_ref += 1
-                writer.add_scalar(f"{agent_name}/StepReward/Eval", step_reward, global_eval_step_ref)
+                writer.add_scalar(f"StepReward/Eval", step_reward, global_eval_step_ref)
                 for k, v in info.items():
-                    writer.add_scalar(f"{agent_name}/Eval/Info/{k}", v, global_eval_step_ref)
+                    writer.add_scalar(f"Eval/Info/{k}", v, global_eval_step_ref)
 
                 pbar.update(1)
                 if args.v:
                     pbar.set_postfix(avg_eval_reward=total / pbar.n)
 
         print(f"=== {agent_name} Eval Ep {ep} | Reward: {total} ===")
-        writer.add_scalar(f"{agent_name}/EpisodeReward/EvalEp", total, ep)
+        writer.add_scalar(f"EpisodeReward/EvalEp", total, ep)
         eval_rewards.append(total)
 
     avg_eval = sum(eval_rewards) / len(eval_rewards)
-    writer.add_scalar(f"{agent_name}/EpisodeReward/EvalAvg", avg_eval, 1)
+    writer.add_scalar(f"EpisodeReward/EvalAvg", avg_eval, 1)
     eval_env.env.close()
     return [], eval_rewards
 
 
-if __name__ == "__main__":
-    sumo_rl_dir = os.path.dirname(nets.__file__)
+def run_agent(agent_name, args, run_id, base_dir):
+    # recreate subdirs & writer
+    tag = f"{agent_name.replace(' ', '')}_run{run_id}"
+    run_dir = os.path.join(base_dir, tag)
+    os.makedirs(os.path.join(run_dir, "csvs"), exist_ok=True)
+    os.makedirs(os.path.join(run_dir, "qtables", agent_name.lower()), exist_ok=True)
+    writer = SummaryWriter(log_dir=run_dir)
 
+    builder = AGENT_BUILDERS[agent_name]
+    if agent_name in BASELINE_AGENTS:
+        _, eval_r = evaluate_baseline(agent_name, builder, args, writer)
+        train_r = []
+    else:
+        train_r, eval_r = train_and_evaluate(agent_name, builder, args, writer, run_dir)
+
+    writer.close()
+    return agent_name, run_id, train_r, eval_r
+
+
+if __name__ == "__main__":
     prs = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="Benchmark Traffic Signal Agents on Single-Intersection SUMO"
     )
     prs.add_argument("-route", type=str,
-                     default=f"{sumo_rl_dir}/single-intersection/single-intersection.rou.xml",
+                     default=f"nets/single-intersection/single-intersection.rou.xml",
                      help="Route definition file")
     prs.add_argument("-net", dest="net_file", type=str,
-                     default=f"{sumo_rl_dir}/single-intersection/single-intersection.net.xml",
+                     default=f"nets/single-intersection/single-intersection.net.xml",
                      help="Network definition file")
     prs.add_argument("-a", type=float, default=0.1, help="Alpha (learning rate)")
     prs.add_argument("-g", type=float, default=0.99, help="Gamma (discount factor)")
@@ -270,119 +294,16 @@ if __name__ == "__main__":
     os.makedirs(os.path.join(base_run_dir, "csvs"), exist_ok=True)
     os.makedirs(os.path.join(base_run_dir, "plots", "single-intersection"), exist_ok=True)
 
-    writer = SummaryWriter(log_dir=base_run_dir)
-    global_eval_step_ref = [0]
+    # assemble jobs
+    jobs = []
+    for name in AGENT_BUILDERS:
+        n_runs = args.runs if name not in BASELINE_AGENTS else 1
+        for rid in range(1, n_runs + 1):
+            jobs.append((name, args, rid, base_run_dir))
 
-    agent_builders = {
-        "Q-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: QLAgent(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "Continuous-Q-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: ContinuousQLearningAgent(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "R-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: RLLearner(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            rho_learning_rate=args.a,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "SMART": lambda initial_state, ts, encode_fn, obs_space, action_space: SMARTRLAgent(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            rho_learning_rate=args.a,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "Harmonic-R-Learning": lambda initial_state, ts, encode_fn, obs_space, action_space: HarmonicRLAgent(
-            starting_state=encode_fn(initial_state, ts),
-            state_space=obs_space,
-            action_space=action_space,
-            alpha=args.a,
-            gamma=args.g,
-            q_table_path=args.load_qtable_path,
-            rho_learning_rate=args.a,
-            exploration_strategy=EpsilonGreedy(
-                initial_epsilon=args.e,
-                min_epsilon=args.me,
-                decay=args.d
-            ),
-        ),
-        "Random": lambda initial_state, ts, encode_fn, obs_space, action_space: RandomAgent(action_space),
-        "FixedTime": lambda initial_state, ts, encode_fn, obs_space, action_space: FixedTimeAgent(action_space),
-    }
-
-    results = {}
-    baseline_agents = {"Random", "FixedTime"}
-    for name, builder in agent_builders.items():
-        global_eval_step_ref[0] = 0
-
-        if name in baseline_agents:
-            train_rewards, eval_rewards = evaluate_baseline(name, builder, args, writer)
-        else:
-            train_rewards, eval_rewards = train_and_evaluate(name, builder, args, writer, base_run_dir)
-
-        results[name] = {"train": train_rewards, "eval": eval_rewards}
-
-    runs = list(range(1, args.runs + 1))
-    plt.figure(figsize=(10, 6))
-    for name, res in results.items():
-        # plot training series (always one point per run)
-        if res["train"]:
-            x_train = list(range(1, len(res["train"]) + 1))
-            plt.plot(x_train, res["train"], marker='o', label=f"{name} Train")
-
-        # plot evaluation series (may be per‐run or per‐episode)
-        x_eval = list(range(1, len(res["eval"]) + 1))
-        plt.plot(x_eval, res["eval"], marker='x', linestyle='--', label=f"{name} Eval")
-
-    plt.title("Training vs Evaluation Rewards")
-    plt.xlabel("Run / Eval Ep")
-    plt.ylabel("Total Reward")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-
-    # save plot under runs directory
-    plot_path = os.path.join(
-        base_run_dir, "plots", "single-intersection",
-        f"{experiment_time}_performance_plot.png"
-    )
-    plt.savefig(plot_path)
-    print(f"Saved performance plot to {plot_path}")
-
-    writer.close()
+    # dispatch
+    with ProcessPoolExecutor(max_workers=min(len(jobs), mp.cpu_count())) as pool:
+        futures = [pool.submit(run_agent, *job) for job in jobs]
+        for f in futures:
+            n, rid, tr, er = f.result()
+            print(f"[MAIN] {n} run{rid} → train={tr} eval={er}")
