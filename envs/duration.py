@@ -45,11 +45,11 @@ class DurationWrapper:
         actions: dict ts -> int in [0..max_units-min_units]
         """
         # --- 1) Snapshot total waiting BEFORE macro-action ---
-        start_wait = 0.0
-        for sig in self.env.traffic_signals.values():
-            # each returns a list of per-lane accumulated waits
-            start_wait += sum(sig.get_accumulated_waiting_time_per_lane())
-        start_wait /= 100.0  # match env’s scaling
+        # start_wait = 0.0
+        # for sig in self.env.traffic_signals.values():
+        #     # each returns a list of per-lane accumulated waits
+        #     start_wait += sum(sig.get_accumulated_waiting_time_per_lane())
+        # start_wait /= 100.0  # match env’s scaling
 
         # --- 2) HOLD loop (ignore rewards) ---
         remaining = {ts: self.min_units + act for ts, act in actions.items()}
@@ -84,13 +84,16 @@ class DurationWrapper:
             self.last_phases[ts] = new_phase
 
         # --- 4) Snapshot total waiting AFTER macro-action ---
-        end_wait = 0.0
-        for sig in self.env.traffic_signals.values():
-            end_wait += sum(sig.get_accumulated_waiting_time_per_lane())
-        end_wait /= 100.0
+        # end_wait = 0.0
+        # for sig in self.env.traffic_signals.values():
+        #     end_wait += sum(sig.get_accumulated_waiting_time_per_lane())
+        # end_wait /= 100.0
 
         # --- 5) Compute the single “diff-waiting” reward ---
-        true_reward = start_wait - end_wait
+        # true_reward = start_wait - end_wait
+
+        for sig in self.env.traffic_signals.values():
+            true_reward = sig.get_average_speed()
 
         # --- 6) Package results ---
         reward_dict = {ts: true_reward for ts in self.env.ts_ids}
